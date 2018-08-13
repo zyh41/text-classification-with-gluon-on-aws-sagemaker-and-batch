@@ -1,0 +1,258 @@
+#!/usr/bin/env python2
+from __future__ import print_function
+import pandas as pd
+import sklearn
+import numpy as np
+import boto3
+import os
+import sys
+import mxnet as mx
+import json
+from utils import *
+import traceback
+import subprocess
+mx.random.seed(123)
+
+prefix = '/opt/ml/'
+input_path = prefix + 'input/data'
+output_path = os.path.join(prefix, 'output')
+model_path = os.path.join(prefix, 'model')
+param_path = os.path.join(prefix, 'input/config/hyperparameters.json')
+channel_name='training'
+training_path = os.path.join(input_path, channel_name)
+
+# The function to execute the training.
+def train():
+    print('[INFO] Starting the training process')
+    try:
+        # Read in any hyperparameters that the user passed with the training job
+        with open(param_path, 'r') as tc:
+            config = json.load(tc)
+
+        # sagemaker reads the config as all text. Thus, this function 
+        # turns the values into their proper formats
+        convert_config(config)
+
+        # Take the set of files and read them all into a single pandas 
+        # dataframe
+        input_files = [ os.path.join(training_path, file) for file in os.listdir(training_path) ]
+        if len(input_files) == 0:
+            raise ValueError(('There are no files in {}.\n' +
+                              'This usually indicates that the channel ({}) was incorrectly specified,\n' +
+                              'the data specification in S3 was incorrectly specified or the role specified\n' +
+                              'does not have permission to access the data.').format(training_path, channel_name))
+        else:
+            raw_data = [ pd.read_csv(file) for file in input_files ]
+            training_data = pd.concat(raw_data)
+
+        x_train = training_data.review
+        y_train = training_data.sentiment.values
+
+        # define the context
+        context = mx.gpu()
+
+        print('[INFO] Loading data')
+        x_train = training_data.review
+        y_train = training_data.sentiment.values
+
+        print('[INFO] Initializing transformer')
+        transformer = TextTransformer()
+
+        print('[INFO] Cleaning dataset')
+        x_train = transformer.transform(x_train)
+
+        print('[INFO] Creating word-count index')
+        transformer.create_count_index(x_train)
+
+        print('[INFO] Creating training data')
+        x_train_encoded = transformer.encode_dataset(data = x_train, 
+                                    max_vocab   = config['vocab_size'], 
+                                    max_seq_len = config['seq_len'])
+        # split dataset
+        X_train, X_val, Y_train, Y_val = train_test_split(x_train_encoded, 
+                                y_train, test_size = 0.2, random_state = 42)
+
+
+        if config['use_spacy_pretrained']:
+            print('[INFO] Loading pre-trained embedding matrix')
+            embedding_matrix = transformer.create_spacy_embedding()
+
+            if config["cnn"]:
+                print('[INFO] Building CNN')
+                net = CNN(n_classes   = config['n_classes'], 
+                          kernel_size = config['kernel_size'], 
+                          embed_size  = embedding_matrix.shape[1], 
+                          dropout     = config['dropout'], 
+                          seq_len     = config['seq_len'], 
+                          vocab_size  = config['vocab_size'])
+                net.collect_params().initialize(mx.init.Xavier(magnitude = 2.24), ctx = context)
+            else:
+                print('[INFO] Building LSTM')
+                net = LSTM(n_classes     = config['n_classes'], 
+                           input_size    = config['vocab_size'], 
+                           embed_size    = embedding_matrix.shape[1],
+                           num_hidden    = config['hidden_size'], 
+                           num_layers    = config['n_layers'], 
+                           dropout       = config['dropout'], 
+                           bidirectional = config['bidirectional'])
+
+                net.collect_params().initialize(mx.init.Orthogonal(), ctx = context)
+            net.encoder.weight.set_data(embedding_matrix.as_in_context(context))
+
+        else:
+            if config["cnn"]:
+                print('[INFO] Building CNN')
+                net = CNN(n_classes   = config['n_classes'], 
+                          kernel_size = config['kernel_size'], 
+                          embed_size  = config['embed_size'], 
+                          dropout     = config['dropout'], 
+                          seq_len     = config['seq_len'], 
+                          vocab_size  = config['vocab_size'])
+                net.collect_params().initialize(mx.init.Xavier(magnitude = 2.24), ctx = context)
+            else:
+                print('[INFO] Building LSTM')
+                net = LSTM(n_classes     = config['n_classes'], 
+                           input_size    = config['vocab_size'], 
+                           embed_size    = config['embed_size'],
+                           num_hidden    = config['hidden_size'], 
+                           num_layers    = config['n_layers'], 
+                           dropout       = config['dropout'], 
+                           bidirectional = config['bidirectional'])
+
+                net.collect_params().initialize(mx.init.Orthogonal(), ctx = context)
+
+        softmax_cross_entropy_loss = gluon.loss.SoftmaxCrossEntropyLoss()
+        if config['wd'] > 0:
+            trainer = gluon.Trainer(net.collect_params(), config['optimizer'], 
+                                {'learning_rate': config['learning_rate'],
+                                 'wd' : config['wd']})
+        else:
+            trainer = gluon.Trainer(net.collect_params(), config['optimizer'], 
+                                {'learning_rate': config['learning_rate']})
+
+
+        # load training data into mxnet dataloaders 
+        train_data = DataGen(mx.nd.array(X_train, context), mx.nd.array(Y_train, context))
+        train_iter = gluon.data.DataLoader(train_data, 
+                                           batch_size = config['batch_size'], 
+                                           shuffle    = True, 
+                                           last_batch = 'rollover')
+
+        val_data = DataGen(mx.nd.array(X_val, context), mx.nd.array(Y_val, context))
+        val_iter = gluon.data.DataLoader(val_data, 
+                                         batch_size = config['batch_size'], 
+                                         shuffle = True, 
+                                         last_batch = 'rollover')
+        dm = DownloadManager()
+
+        print('[INFO] Uploading transformer to s3')
+        dm.sklearn_model_to_s3(transformer, bucket = config["TRANSFORMERURL"],
+                               key = 'transformer.pkl')
+        acc = mx.metric.Accuracy()
+        print('[INFO] Beginning training!') 
+        best_val_acc = 0.5 
+        learning_rate = config['learning_rate']
+        for epoch in range(config['num_epoch']):
+            total_loss = 0.0
+            start_time = time.time()
+
+            if not config["cnn"]:
+                # begin the hidden state of the network 
+                hidden = net.begin_state(func       = mx.nd.zeros, 
+                                         batch_size = config['batch_size'],
+                                         ctx        = context)
+
+            # iterate through each bach, gather the loss of each bach, and 
+            # compute the gradients via backprob from the loss through the network 
+            for i, (data, target) in enumerate(train_iter): 
+                if not config["cnn"]:
+                    hidden = detach(hidden)
+                with autograd.record():
+                    if config["cnn"]:
+                        predictions = net(data)
+                    else:
+                        predictions, hidden = net(data, hidden)
+                    batch_loss = softmax_cross_entropy_loss(predictions, target)
+                    batch_loss.backward()
+                    # print("prediction ", predictions)
+                    # print("argmax ", mx.nd.argmax(predictions, axis=1))
+                    # print("target ", target)
+                    # print("loss: ", batch_loss)
+                    # print("target type", type(target))
+                    acc.update(preds=mx.nd.argmax(predictions, axis=1, keepdims=True), labels=target) #RYAN
+                    # print("Stuck here 2")
+                if not config["cnn"]:
+                    # here we're going to clip the gradients for this network to avoid
+                    # vanishing gradients within the network
+                    grads = [x.grad(context) for x in net.collect_params().values()]
+                    gluon.utils.clip_global_norm(grads, 0.2 * 5 * config['batch_size'])
+
+                # here we make one step of parameter updates after we've already computed
+                # the gradients in the .backward() call
+                trainer.step(config['batch_size'])
+
+                # now we collect the loss and add it to the total loss
+                total_loss += mx.nd.sum(batch_loss).asscalar()
+
+                # we set logging intervals to display how our algorithm is learning
+                if i % config['train_log_interval'] == 0 and i > 0:
+                    current_loss = total_loss / 5 / config['batch_size'] / config['train_log_interval']
+                    perplex = perplexity(current_loss)
+                    print('[Epoch %d Batch %d Train] loss %.5f, perplexity %.5f' % (
+                           epoch + 1, i, current_loss, perplex))
+                    total_loss = 0.0
+
+            # evaluate our validation data.
+            if config["cnn"]:
+                val_acc, val_loss = evaluate_cnn(val_iter, softmax_cross_entropy_loss, net, context)
+            else:
+                val_acc, val_loss = evaluate(val_iter, softmax_cross_entropy_loss, net, context)
+            val_perplex = perplexity(val_loss)
+
+            print('[Epoch %d Batch %d Validation] time cost %.2fs, validation loss %.5f, validation perplexity %.5f, accuracy %.5f' % (
+                           epoch + 1, i, time.time() - start_time, val_loss, val_perplex, val_acc))
+
+            # save our parameters
+            if val_acc > best_val_acc:
+                print('[New Best Validation Accuracy] %.5f !!!!!!!' % val_acc)
+                best_val_acc = val_acc
+                net.save_params('/tmp/'+config['save_name'])
+
+            # decay our learning rate
+            if config['power_decay']:
+                if epoch > config['epoch_factor']:
+                    decay = math.floor((epoch) / config['epoch_factor'])
+                    trainer.set_learning_rate(trainer.learning_rate * math.pow(0.1, decay))
+            else:
+                 if epoch > config['epoch_factor']:
+                    learning_rate = learning_rate * 0.90
+                    print('[INFO] Lowering the Learning rate to %.5f' % learning_rate)
+                    trainer.set_learning_rate(learning_rate)
+
+
+            print('[Epoch %d Validation] time cost %.2fs, validation loss %.5f, validation perplexity %.5f, accuracy %.5f' % (
+                       epoch + 1, time.time() - start_time, val_loss, val_perplex, val_acc))
+
+        print('[Best Validation Accuracy] %.5f ' % best_val_acc)
+
+        print('[INFO] Uploading best model parameters to s3')
+        dm.upload_file('/tmp/'+config['save_name'], 
+                       bucket = config['MODELPARAMSURL'],
+                       key    = config['save_name'])
+        print('[INFO] Training complete.')
+
+    except Exception as e:
+        # Write out an error file. This will be returned as the failureReason in the
+        # DescribeTrainingJob result.
+        trc = traceback.format_exc()
+        with open(os.path.join(output_path, 'failure'), 'w') as s:
+            s.write('Exception during training: ' + str(e) + '\n' + trc)
+        # Printing this causes the exception to be in the training job logs, as well.
+        print('Exception during training: ' + str(e) + '\n' + trc, file=sys.stderr)
+        # A non-zero exit code causes the training job to be marked as Failed.
+        sys.exit(255)
+
+if __name__ == '__main__':
+    train()
+    # A zero exit code causes the job to be marked a Succeeded.
+    sys.exit(0)

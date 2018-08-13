@@ -1,0 +1,49 @@
+{
+    "n_classes" : 2,
+
+    "num_epoch" : 5,
+
+    "optimizer" : "adam",
+
+    "seq_len" : 500,
+
+    "vocab_size" : 5000,
+
+    "batch_size" : 64,
+
+    "hidden_size" : 500,
+
+    "embed_size" : 300,
+
+    "dropout" : 0.2,
+
+    "n_layers" : 1,
+
+    "bidirectional" : true,
+
+    "train_log_interval" : 10,
+
+    "val_log_interval" : 5,
+
+    "learning_rate" : 0.001,
+
+    "use_spacy_pretrained" : true,
+
+    "save_name" : "model.params",
+
+    "MODELPARAMSURL" : "ryan-mxnet-demo-model-paramameters",
+
+    "TRANSFORMERURL" : "ryan-mxnet-demo-text-transformer",
+
+    "MODELCONFIGURL" : "ryan-mxnet-demo-config-bucket",
+
+    "epoch_factor" : 4,
+
+    "power_decay" : false,
+
+    "cnn" : true,
+
+    "wd" : 0.0002,
+
+    "kernel_size" : 8
+ }

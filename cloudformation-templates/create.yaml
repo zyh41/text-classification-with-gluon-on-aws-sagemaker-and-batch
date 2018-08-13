@@ -1,0 +1,1088 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: AWS CloudFormation Template to create the iam roles necessary to a batch
+  job to run
+Parameters:
+  ApplicationTag:
+    Description: What internal application does this support?
+    Type: String
+    Default: MXNET
+  EnvironmentTag:
+    Description: What environment is this stack in?
+    Type: String
+    AllowedValues:
+    - Development
+    - Production
+  s3uniqueprefix: 
+    Description: This will be the prefix on all s3 buckets.  
+    Type: String
+    Default: ryan-mxnet-demo
+  ComputeEnvironmentName:
+    Description: This is the name for the compute environment you wish to use
+    Type: String
+    Default: mxnet-ce-2
+  JobQueueName:
+    Description: This is the name of the job queue you wish to use
+      unique
+    Type: String
+    Default: mxnet-jq
+  s3MXNETConfigBucket:
+    Description: This is where our training configuration will be placed
+    Type: String
+    Default: config-bucket
+  s3TextTransformerBucket:
+    Description: This is where your text tranformer pipeline will be dumped
+    Type: String
+    Default: text-transformer
+  s3MXNETParamsBucket:
+    Description: This is where your mxnet weights will be uploaded
+    Type: String
+    Default: model-paramameters
+  s3ResultsBucket:
+    Description: This is where the results of the prediction lambda will be placed
+    Type: String
+    Default: batch-results
+  s3TrainBucket:
+    Description: This is where the data used for training will be placed
+    Type: String
+    Default: train-bucket
+  s3PredictBucket:
+    Description: This is where the data will be placed that you want predicted
+    Type: String
+    Default: predict-bucket
+  MXNETHQCidr:
+    ConstraintDescription: Must be the CIDR of HQ Users
+    Type: String
+    Description: HQ User CIDR
+    Default: 10.0.0.0/8
+  AWSBatchLambdaCodeKey:
+    ConstraintDescription: Bucket Folder Structure (Prefix) and File Location for
+      the Code
+    Description: Bucket Location for Lambda Code
+    Type: String
+    Default: mxnet_batch_lambda/lambda_function.zip
+  LambdaCodeBucket:
+    Description: Bucket for the Lambda Code
+    Type: String
+    Default: 'mxnet-lambda-ryan-1'
+  IMAGE:
+    Description: The respository URI from ECS Containers
+    Type: String
+    Default: 390089750816.dkr.ecr.us-west-2.amazonaws.com/languagemodel-ryan
+    # {account-id}.dkr.ecr.{reguion}.amazonaws.com/languagemodel
+  vcpus:
+    Description: The number of cpus for the particular machine we want to use
+    Type: String
+    Default: '4'
+  memory:
+    Description: The memory in mbs that we want the maching to have
+    Type: String
+    Default: '10000'
+  EnvironmentTag:
+    Description: What environment is this stack in?
+    Type: String
+    AllowedValues:
+    - Development
+    - Production
+  VersionTag:
+    Description: Distinguish between different versions of the resource or application
+    Type: String
+    Default: '0.0.1'
+  VPCCIDR:
+    Description: CIDR Block for the VPC
+    Type: String
+    Default: 10.1.0.0/16
+    AllowedPattern: "[a-zA-Z0-9]+\\..+"
+  AZ1:
+    Description: AZ1 for the VPC
+    Type: String
+    Default: us-west-2a
+  AZ2:
+    Description: AZ2 for the VPC
+    Type: String
+    Default: us-west-2b
+  AZ1Public1SubnetCIDR:
+    Description: CIDR Block for the Public Subnet located in AZ1
+    Type: String
+    Default: 10.1.1.0/24
+    AllowedPattern: "[a-zA-Z0-9]+\\..+"
+  AZ2Public1SubnetCIDR:
+    Description: CIDR Block for the Public Subnet located in AZ2
+    Type: String
+    Default: 10.1.3.0/24
+    AllowedPattern: "[a-zA-Z0-9]+\\..+"
+  AZ1Private1SubnetCIDR:
+    Description: CIDR block for the Private Subnet located in AZ1.
+    Type: String
+    Default: 10.1.2.0/24
+    AllowedPattern: "[a-zA-Z0-9]+\\..+"
+  AZ2Private1SubnetCIDR:
+    Description: CIDR block for the Private Subnet located in AZ2.
+    Type: String
+    Default: 10.1.4.0/24
+    AllowedPattern: "[a-zA-Z0-9]+\\..+"
+  NameTag:
+    Description: Used to identify individual resources
+    Type: String
+    Default: MXNET VPC
+  ApplicationRoleTag:
+    Description: Describe the function of this resource
+    Type: String
+    Default: MXNET VPC and Network
+  ImageId:
+    Description: Image ID for base EC2 instance.
+    Type: AWS::EC2::Image::Id
+    # Deep Learning AMI AmazonLinux - 1.0
+    Default: ami-e2025d9a
+  InstanceType:
+    Description: Instance type to launch EC2 instances.
+    Type: String
+    Default: p2.xlarge
+    AllowedValues: [ p2.xlarge]
+
+Conditions:
+  CreateDevelopmentResources:
+    Fn::Equals:
+    - !Ref EnvironmentTag
+    - Development
+Resources:
+  # Completes when the instance is fully provisioned and ready for AMI creation.
+  AMICreate:
+    Type: AWS::CloudFormation::WaitCondition
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT30M
+  Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref ImageId
+      InstanceType: !Ref InstanceType
+      NetworkInterfaces: 
+        - AssociatePublicIpAddress: "true"
+          DeviceIndex: "0"
+          SubnetId: 
+            !Ref AZ1Private1Subnet
+      UserData:
+        "Fn::Base64": !Sub |
+          #!/bin/bash -x
+          rc=0
+          yum -y install docker || rc=1
+          echo 'DOCKER_STORAGE_OPTIONS="--storage-driver overlay --storage-opt dm.fs=ext4"' | tee /etc/sysconfig/docker-storage || rc=1
+          service docker start || rc=1
+          wget -P /tmp https://github.com/NVIDIA/nvidia-docker/releases/download/v1.0.1/nvidia-docker_1.0.1_amd64.tar.xz || rc=1
+          tar --strip-components=1 -C /usr/bin -xvf /tmp/nvidia-docker*.tar.xz || rc=1
+          echo '#!/bin/bash' | tee /var/lib/cloud/scripts/per-boot/00_nvidia-modprobe >/dev/null || rc=1
+          echo 'nvidia-modprobe -u -c=0' | tee --append /var/lib/cloud/scripts/per-boot/00_nvidia-modprobe >/dev/null || rc=1
+          chmod +x /var/lib/cloud/scripts/per-boot/00_nvidia-modprobe || rc=1
+          /var/lib/cloud/scripts/per-boot/00_nvidia-modprobe || rc=1
+          nohup nvidia-docker-plugin & 2>&1 | tee /tmp/nvidia-docker.log || rc=1
+          nvidia-smi -q > /tmp/nvidia-smi.log || rc=1
+          docker pull nvidia/cuda:6.5-runtime || rc=1
+          docker pull mxnet/python:gpu || rc=1
+          nvidia-docker run --rm nvidia/cuda:6.5-runtime nvidia-smi || true
+          sleep 15 # Fails first time!
+          nvidia-docker run --rm nvidia/cuda:6.5-runtime nvidia-smi || rc=1
+          nvidia_base=/var/lib/nvidia-docker/volumes/nvidia_driver || rc=1
+          ln -s $nvidia_base/$(ls $nvidia_base | sort -n  | tail -1) $nvidia_base/latest || rc=1
+          yum -y install ecs-init || rc=1
+          /opt/aws/bin/cfn-signal \
+            -e $rc \
+            --stack ${AWS::StackName} \
+            --region ${AWS::Region} \
+            --resource AMICreate
+          shutdown -h now
+  AMI:
+    Type: Custom::AMI
+    DependsOn: AMICreate
+    Properties:
+      ServiceToken: !GetAtt AMIFunction.Arn
+      InstanceId: !Ref Instance
+  AMIFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: !Sub |
+          var response = require('cfn-response');
+          var AWS = require('aws-sdk');
+          exports.handler = function(event, context) {
+            console.log("Request received:\n", JSON.stringify(event));
+            var physicalId = event.PhysicalResourceId;
+            function success(data) {
+              return response.send(event, context, response.SUCCESS, data, physicalId);
+            }
+            function failed(e) {
+              return response.send(event, context, response.FAILED, e, physicalId);
+            }
+            // Call ec2.waitFor, continuing if not finished before Lambda function timeout.
+            function wait(waiter) {
+              console.log("Waiting: ", JSON.stringify(waiter));
+              event.waiter = waiter;
+              event.PhysicalResourceId = physicalId;
+              var request = ec2.waitFor(waiter.state, waiter.params);
+              setTimeout(()=>{
+                request.abort();
+                console.log("Timeout reached, continuing function. Params:\n", JSON.stringify(event));
+                var lambda = new AWS.Lambda();
+                lambda.invoke({
+                  FunctionName: context.invokedFunctionArn,
+                  InvocationType: 'Event',
+                  Payload: JSON.stringify(event)
+                }).promise().then((data)=>context.done()).catch((err)=>context.fail(err));
+              }, context.getRemainingTimeInMillis() - 5000);
+              return request.promise().catch((err)=>
+                (err.code == 'RequestAbortedError') ?
+                  new Promise(()=>context.done()) :
+                  Promise.reject(err)
+              );
+            }
+            var ec2 = new AWS.EC2(),
+                instanceId = event.ResourceProperties.InstanceId;
+            if (event.waiter) {
+              wait(event.waiter).then((data)=>success({})).catch((err)=>failed(err));
+            } else if (event.RequestType == 'Create' || event.RequestType == 'Update') {
+              if (!instanceId) { failed('InstanceID required'); }
+              ec2.waitFor('instanceStopped', {InstanceIds: [instanceId]}).promise()
+              .then((data)=>
+                ec2.createImage({
+                  InstanceId: instanceId,
+                  Name: event.RequestId
+                }).promise()
+              ).then((data)=>
+                wait({
+                  state: 'imageAvailable',
+                  params: {ImageIds: [physicalId = data.ImageId]}
+                })
+              ).then((data)=>success({})).catch((err)=>failed(err));
+            } else if (event.RequestType == 'Delete') {
+              if (physicalId.indexOf('ami-') !== 0) { return success({});}
+              ec2.describeImages({ImageIds: [physicalId]}).promise()
+              .then((data)=>
+                (data.Images.length == 0) ? success({}) :
+                ec2.deregisterImage({ImageId: physicalId}).promise()
+              ).then((data)=>
+                ec2.describeSnapshots({Filters: [{
+                  Name: 'description',
+                  Values: ["*" + physicalId + "*"]
+                }]}).promise()
+              ).then((data)=>
+                (data.Snapshots.length === 0) ? success({}) :
+                ec2.deleteSnapshot({SnapshotId: data.Snapshots[0].SnapshotId}).promise()
+              ).then((data)=>success({})).catch((err)=>failed(err));
+            }
+          };
+      Runtime: nodejs4.3
+      Timeout: 300
+
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Lambda Security Group for MXNET
+      VpcId:
+        !Ref VPC
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '22'
+        ToPort: '22'
+        CidrIp:
+          !Ref MXNETHQCidr
+      Tags:
+      - Key: Name
+        Value:
+          !Join
+            - "-"
+            - - !Ref ApplicationTag
+              - LambdaSecurityGroup
+      - Key: Application
+        Value:
+          !Ref ApplicationTag
+      - Key: Application Role
+        Value:
+          !Ref ApplicationTag
+      - Key: Environment
+        Value:
+          !Ref EnvironmentTag
+      - Key: Version
+        Value:
+          !Ref VersionTag
+  ECSInstanceRole1:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: ECSInstanceRole1
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - ec2.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+      Policies:
+      - PolicyName: AmazonEC2ContainerServiceforEC2Role
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - ecs:CreateCluster
+            - ecs:DeregisterContainerInstance
+            - ecs:DiscoverPollEndpoint
+            - ecs:Poll
+            - ecs:RegisterContainerInstance
+            - ecs:StartTelemetrySession
+            - ecs:Submit*
+            - ecr:GetAuthorizationToken
+            - ecr:BatchCheckLayerAvailability
+            - ecr:GetDownloadUrlForLayer
+            - ecr:BatchGetImage
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            Resource: "*"
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/AWSBatchFullAccess
+      - arn:aws:iam::aws:policy/AWSLambdaFullAccess
+      - arn:aws:iam::aws:policy/AmazonEC2FullAccess
+      - arn:aws:iam::aws:policy/AmazonS3FullAccess
+  ECSInstanceRole1InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: ECSInstanceRole1
+      Path: "/instance-profile/"
+      Roles:
+      - !Ref ECSInstanceRole1
+  spotFleetRole:
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action:
+          - sts:AssumeRole
+          Effect: Allow
+          Principal:
+            Service:
+            - spotfleet.amazonaws.com
+        Version: 2012-10-17
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AmazonEC2SpotFleetRole
+      Path: /
+    Type: AWS::IAM::Role
+  AWSBatchServiceRole1:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: AWSBatchServiceRole1
+      Path: "/service-role/"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - batch.amazonaws.com
+          Action:
+          - sts:AssumeRole
+        - Effect: Allow
+          Principal:
+            Service:
+            - ecs-tasks.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Policies:
+      - PolicyName: AmazonEC2ContainerServiceforEC2RoleS3FullAccess
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - ec2:DescribeAccountAttributes
+            - ec2:DescribeInstances
+            - ec2:DescribeSubnets
+            - ec2:DescribeSecurityGroups
+            - ec2:DescribeKeyPairs
+            - ec2:DescribeImages
+            - ec2:DescribeImageAttribute
+            - ec2:DescribeSpotFleetInstances
+            - ec2:DescribeSpotFleetRequests
+            - ec2:DescribeSpotPriceHistory
+            - ec2:RequestSpotFleet
+            - ec2:CancelSpotFleetRequests
+            - ec2:ModifySpotFleetRequest
+            - ec2:TerminateInstances
+            - autoscaling:DescribeAccountLimits
+            - autoscaling:DescribeAutoScalingGroups
+            - autoscaling:DescribeLaunchConfigurations
+            - autoscaling:DescribeAutoScalingInstances
+            - autoscaling:CreateLaunchConfiguration
+            - autoscaling:CreateAutoScalingGroup
+            - autoscaling:UpdateAutoScalingGroup
+            - autoscaling:SetDesiredCapacity
+            - autoscaling:DeleteLaunchConfiguration
+            - autoscaling:DeleteAutoScalingGroup
+            - autoscaling:CreateOrUpdateTags
+            - autoscaling:SuspendProcesses
+            - autoscaling:PutNotificationConfiguration
+            - autoscaling:TerminateInstanceInAutoScalingGroup
+            - ecs:DescribeClusters
+            - ecs:DescribeContainerInstances
+            - ecs:DescribeTaskDefinitions
+            - ecs:DescribeTasks
+            - ecs:ListClusters
+            - ecs:ListContainerInstances
+            - ecs:ListTaskDefinitionFamilies
+            - ecs:ListTaskDefinitions
+            - ecs:ListTasks
+            - ecs:CreateCluster
+            - ecs:DeleteCluster
+            - ecs:RegisterTaskDefinition
+            - ecs:DeregisterTaskDefinition
+            - ecs:RunTask
+            - ecs:StartTask
+            - ecs:StopTask
+            - ecs:UpdateContainerAgent
+            - ecs:DeregisterContainerInstance
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            - logs:DescribeLogGroups
+            - iam:GetInstanceProfile
+            - iam:PassRole
+            - s3:*
+            - batch:*
+            Resource: "*"
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/AWSBatchFullAccess
+      - arn:aws:iam::aws:policy/AWSLambdaFullAccess
+      - arn:aws:iam::aws:policy/AmazonEC2FullAccess
+      - arn:aws:iam::aws:policy/AmazonS3FullAccess
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal: 
+            Service: 
+            - lambda.amazonaws.com
+          Action: 
+          - 'sts:AssumeRole'
+      Path: /
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      - arn:aws:iam::aws:policy/service-role/AWSLambdaRole
+      - arn:aws:iam::aws:policy/AWSBatchFullAccess
+      - arn:aws:iam::aws:policy/AWSLambdaFullAccess
+      - arn:aws:iam::aws:policy/AmazonEC2FullAccess
+      - arn:aws:iam::aws:policy/AmazonS3FullAccess
+      Policies:
+      - PolicyName: EC2Policy
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+              - 'ec2:DescribeInstances'
+              - 'ec2:DescribeImages'
+              - 'ec2:CreateImage'
+              - 'ec2:DeregisterImage'
+              - 'ec2:DescribeSnapshots'
+              - 'ec2:DeleteSnapshot'
+              - 'ec2:*'
+              - 'logs:*'
+              - 'iam:*'
+              - 's3:*'
+              - 'batch:*'
+              - 'autoscaling:*'
+              - 'ecs:*'
+              Resource: ['*']
+  AmazonSageMakerExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal: 
+            Service: 
+            - sagemaker.amazonaws.com
+          Action: 
+          - 'sts:AssumeRole'
+      Path: "/" # TODO: add service-role here
+      # TODO: add batchfullaccess and lambda full access below
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/AmazonSageMakerFullAccess
+      - arn:aws:iam::aws:policy/AmazonS3FullAccess
+      Policies:
+      - PolicyName: SageMakerPolicy
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+              - 'ecr:*'
+              - 'cloudwatch:*'
+              - 'logs:*'
+              - 's3:*'
+              - 'iam:*'
+              - 'ec2:*'
+              - 'ecs:*'
+              Resource: ['*']
+  MXNETConfigBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName:
+        !Join
+          - "-"
+          - - !Ref s3uniqueprefix
+            - !Ref s3MXNETConfigBucket
+      Tags:
+      - Key: Name
+        Value:
+          !Join
+            - "-"
+            - - !Ref s3uniqueprefix
+              - !Ref s3MXNETConfigBucket
+      - Key: Application
+        Value:
+          !Ref ApplicationTag
+      - Key: Application Role
+        Value:
+          !Ref ApplicationRoleTag
+      - Key: Environment
+        Value: Production
+      - Key: Version
+        Value:
+          !Ref VersionTag
+  TextTransformerBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName:
+        !Join
+          - "-"
+          - - !Ref s3uniqueprefix
+            - !Ref s3TextTransformerBucket
+      Tags:
+      - Key: Name
+        Value:
+          !Join
+            - "-"
+            - - !Ref s3uniqueprefix
+              - !Ref s3TextTransformerBucket
+      - Key: Application
+        Value:
+          !Ref ApplicationTag
+      - Key: Application Role
+        Value:
+          !Ref ApplicationRoleTag
+      - Key: Environment
+        Value: Production
+      - Key: Version
+        Value:
+          !Ref VersionTag
+  MXNETParamsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName:
+        !Join
+          - "-"
+          - - !Ref s3uniqueprefix
+            - !Ref s3MXNETParamsBucket
+      Tags:
+      - Key: Name
+        Value:
+          !Join
+            - "-"
+            - - !Ref s3uniqueprefix
+              - !Ref s3MXNETParamsBucket
+      - Key: Application
+        Value:
+          !Ref ApplicationTag
+      - Key: Application Role
+        Value:
+          !Ref ApplicationRoleTag
+      - Key: Environment
+        Value: Production
+      - Key: Version
+        Value:
+          !Ref VersionTag
+  ResultsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName:
+        !Join
+          - "-"
+          - - !Ref s3uniqueprefix
+            - !Ref s3ResultsBucket
+      Tags:
+      - Key: Name
+        Value:
+          !Join
+            - "-"
+            - - !Ref s3uniqueprefix
+              - !Ref s3ResultsBucket
+      - Key: Application
+        Value:
+          !Ref ApplicationTag
+      - Key: Application Role
+        Value:
+          !Ref ApplicationRoleTag
+      - Key: Environment
+        Value: Production
+      - Key: Version
+        Value:
+          !Ref VersionTag
+  TrainBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName:
+        !Join
+          - "-"
+          - - !Ref s3uniqueprefix
+            - !Ref s3TrainBucket
+      Tags:
+      - Key: Name
+        Value:
+          !Join
+            - "-"
+            - - !Ref s3uniqueprefix
+              - !Ref s3TrainBucket
+      - Key: Application
+        Value:
+          !Ref ApplicationTag
+      - Key: Application Role
+        Value:
+          !Ref ApplicationRoleTag
+      - Key: Environment
+        Value: Production
+      - Key: Version
+        Value:
+          !Ref VersionTag    
+  AWSBatchPredictLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: awsbatch-lambda-predict-function
+      Handler: lambda_function.lambda_handler
+      Description: ''
+      Role:
+        !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket:
+          !Ref LambdaCodeBucket
+        S3Key:
+          !Ref AWSBatchLambdaCodeKey
+      Runtime: python2.7
+      Timeout: '120'
+      MemorySize: '128'
+      Environment:
+        Variables:
+          ENVIRONMENTNAME:
+            !Join
+              - "-"
+              - - !Ref s3uniqueprefix
+                - !Ref ComputeEnvironmentName
+          JOBQUEUENAME: 
+            !Join
+              - "-"
+              - - !Ref s3uniqueprefix
+                - !Ref JobQueueName
+          JOBNAME: "predictjob"
+      VpcConfig:
+        SecurityGroupIds:
+        - !Ref LambdaSecurityGroup
+        SubnetIds:
+        - !Ref AZ1Private1Subnet
+  PredictBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName:
+        !Join
+          - "-"
+          - - !Ref s3uniqueprefix
+            - !Ref s3PredictBucket
+      Tags:
+      - Key: Name
+        Value:
+          !Join
+            - "-"
+            - - !Ref s3uniqueprefix
+              - !Ref s3PredictBucket
+      - Key: Application
+        Value:
+          !Ref ApplicationTag
+      - Key: Application Role
+        Value:
+          !Ref ApplicationRoleTag
+      - Key: Environment
+        Value: Production
+      - Key: Version
+        Value:
+          !Ref VersionTag       
+  AWSBatchPredictLambdaPerm: 
+    Type: AWS::Lambda::Permission
+    Properties : 
+      Action: lambda:InvokeFunction
+      FunctionName: 
+        !Ref AWSBatchPredictLambda
+      Principal: s3.amazonaws.com
+      SourceArn:  
+          !Join
+            - ''
+            - - 'arn:aws:s3:::'
+              - !Ref PredictBucket
+  ComputeEnvironment:
+    Type: AWS::Batch::ComputeEnvironment
+    Properties:
+      Type: MANAGED
+      ServiceRole: !GetAtt AWSBatchServiceRole1.Arn
+      ComputeEnvironmentName: 
+          !Join
+            - "-"
+            - - !Ref s3uniqueprefix
+              - !Ref ComputeEnvironmentName
+      ComputeResources:
+        MaxvCpus: 128
+        SecurityGroupIds: 
+            [!Ref LambdaSecurityGroup]
+        Type: SPOT
+        Subnets: 
+            [!Ref AZ1Private1Subnet]
+        MinvCpus: 8
+        InstanceRole: !Ref ECSInstanceRole1InstanceProfile
+        DesiredvCpus: 48
+        InstanceTypes:
+          - p2.xlarge
+        BidPercentage: 80
+        ImageId: !Ref AMI
+        SpotIamFleetRole: !GetAtt spotFleetRole.Arn
+      State: ENABLED
+  PredictJobDefinition:
+    Type: 'AWS::Batch::JobDefinition' 
+    Properties:
+      RetryStrategy: 
+        Attempts: 5
+      Type: container
+      JobDefinitionName: predictjob
+      ContainerProperties:
+        Command: 
+              ["python2",
+               "/usr/local/bin/predict.py",
+               "--DATAURL",
+               !Ref PredictBucket,
+               "--KEY",
+               "test.csv",
+               "--MODELCONFIGURL",
+               !Ref MXNETConfigBucket, 
+               "--TRANSFORMERURL",
+               !Ref TextTransformerBucket,
+               "--MODELPARAMSURL",
+               !Ref MXNETParamsBucket,
+               "--S3BUCKETRESULTS",
+               !Ref ResultsBucket
+              ]
+        Memory: !Ref memory
+        Privileged: true
+        ReadonlyRootFilesystem: false
+        Vcpus: !Ref vcpus
+        Image: !Ref IMAGE
+        JobRoleArn: !GetAtt AWSBatchServiceRole1.Arn
+        Volumes: 
+          - Host: 
+              SourcePath: /var/lib/nvidia-docker/volumes/nvidia_driver/latest
+            Name: nvidia-driver-dir
+        MountPoints:
+          - ContainerPath: '/usr/local/nvidia'
+            ReadOnly: true
+            SourceVolume: 'nvidia-driver-dir'
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock:
+        !Ref VPCCIDR
+      EnableDnsSupport: 'true'
+      EnableDnsHostnames: 'true'
+      Tags:
+      - Key: Name
+        Value:
+          !Ref NameTag
+      - Key: Application
+        Value:
+          !Ref ApplicationTag
+      - Key: Application Role
+        Value:
+          !Ref ApplicationRoleTag
+      - Key: Version
+        Value:
+          !Ref VersionTag
+  S3Endpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal: "*"
+          Action:
+          - "*"
+          Resource:
+          - "*"
+      RouteTableIds:
+      - !Ref AZ2Private1RouteTable
+      - !Ref AZ1Private1RouteTable
+      - !Ref AZ1Public1RouteTable
+      - !Ref AZ2Public1RouteTable
+      ServiceName:
+        !Join
+          - ''
+          - - com.amazonaws.
+            - !Ref AWS::Region
+            - ".s3"
+      VpcId:
+        !Ref VPC
+  AZ1Public1Subnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone:
+        !Ref AZ1
+      VpcId:
+        !Ref VPC
+      CidrBlock:
+        !Ref AZ1Public1SubnetCIDR
+      Tags:
+      - Key: Name
+        Value: AZ1Public1Subnet
+  AZ1Public1RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId:
+        !Ref VPC
+      Tags:
+      - Key: Name
+        Value: AZ1Public1RouteTable
+  AZ1Public1Route:
+    Type: AWS::EC2::Route
+    DependsOn: GatewayToInternet
+    Properties:
+      RouteTableId:
+        !Ref AZ1Public1RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId:
+        !Ref InternetGateway
+  AZ1Public1SubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId:
+        !Ref AZ1Public1Subnet
+      RouteTableId:
+        !Ref AZ1Public1RouteTable
+  AZ2Public1Subnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone:
+        !Ref AZ2
+      VpcId:
+        !Ref VPC
+      CidrBlock:
+        !Ref AZ2Public1SubnetCIDR
+      Tags:
+      - Key: Name
+        Value: AZ2Public1Subnet
+  AZ2Public1RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId:
+        !Ref VPC
+      Tags:
+      - Key: Name
+        Value: AZ2Public1RouteTable
+  AZ2Public1Route:
+    Type: AWS::EC2::Route
+    DependsOn: GatewayToInternet
+    Properties:
+      RouteTableId:
+        !Ref AZ2Public1RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId:
+        !Ref InternetGateway
+  AZ2Public1SubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId:
+        !Ref AZ2Public1Subnet
+      RouteTableId:
+        !Ref AZ2Public1RouteTable
+  AZ1Private1Subnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone:
+        !Ref AZ1
+      VpcId:
+        !Ref VPC
+      CidrBlock:
+        !Ref AZ1Private1SubnetCIDR
+      Tags:
+      - Key: Name
+        Value: AZ1Private1Subnet
+  AZ1Private1RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId:
+        !Ref VPC
+      Tags:
+      - Key: Name
+        Value: AZ1Private1RouteTable
+  AZ1Private1Route:
+    Type: AWS::EC2::Route
+    DependsOn: GatewayToInternet
+    Properties:
+      RouteTableId:
+        !Ref AZ1Private1RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId:
+        !Ref AZ1NAT
+  AZ1Private1SubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId:
+        !Ref AZ1Private1Subnet
+      RouteTableId:
+        !Ref AZ1Private1RouteTable
+  AZ2Private1Subnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone:
+        !Ref AZ2
+      VpcId:
+        !Ref VPC
+      CidrBlock:
+        !Ref AZ2Private1SubnetCIDR
+      Tags:
+      - Key: Name
+        Value: AZ2Private1Subnet
+  AZ2Private1RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId:
+        !Ref VPC
+      Tags:
+      - Key: Name
+        Value: AZ2Private1RouteTable
+  AZ2Private1Route:
+    Type: AWS::EC2::Route
+    DependsOn: GatewayToInternet
+    Properties:
+      RouteTableId:
+        !Ref AZ2Private1RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId:
+        !Ref AZ2NAT
+  AZ2Private1SubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId:
+        !Ref AZ2Private1Subnet
+      RouteTableId:
+        !Ref AZ2Private1RouteTable
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+      - Key: Application
+        Value:
+          !Ref AWS::StackId
+      - Key: Network
+        Value: Public
+      - Key: Name
+        Value: LYNC_InternetGateway
+  GatewayToInternet:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId:
+        !Ref VPC
+      InternetGatewayId:
+        !Ref InternetGateway
+  AZ1NAT:
+    DependsOn: GatewayToInternet
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId:
+        Fn::GetAtt:
+        - AZ1NATEIP
+        - AllocationId
+      SubnetId:
+        !Ref AZ1Public1Subnet
+  AZ1NATEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+  AZ2NAT:
+    DependsOn: GatewayToInternet
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId:
+        Fn::GetAtt:
+        - AZ2NATEIP
+        - AllocationId
+      SubnetId:
+        !Ref AZ2Public1Subnet
+  AZ2NATEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+Outputs:
+  AMI:
+    Value: !Ref AMI
+  InstanceCommonSecurityGroupID:
+    Description: Security Group ID for the Development Common Instance
+    Value:
+      !Ref LambdaSecurityGroup
+    Export:
+      Name:
+        !Join
+          - "-"
+          - - !Ref ApplicationTag
+            - LambdaSecurityGroup
+  ClientAWSBatchDevRole:
+    Description: ARN for Dev LambdaExecutionRole Role
+    Value:
+      !GetAtt LambdaExecutionRole.Arn
+    Export:
+      Name:
+        !Join
+          - "-"
+          - - !Ref ApplicationTag
+            - LambdaExecutionRole
+  VPCId:
+    Description: VPCId of the newly created VPC
+    Value:
+      !Ref VPC
+    Export:
+      Name:
+        Fn::Sub: MXNETVPCID
+  AZ1Public1Subnet:
+    Description: AZ1 Subnet of the newly created VPC
+    Value:
+      !Ref AZ1Public1Subnet
+    Export:
+      Name:
+        Fn::Sub: AZ1Public1Subnet
+  AZ2Public1Subnet:
+    Description: AZ2 Subnet of the newly created VPC
+    Value:
+      !Ref AZ2Public1Subnet
+    Export:
+      Name:
+        Fn::Sub: AZ2Public1Subnet
+  AZ1Private1Subnet:
+    Description: AZ2 Subnet of the newly created VPC
+    Value:
+      !Ref AZ1Private1Subnet
+    Export:
+      Name:
+        Fn::Sub: AZ1Private1Subnet
+  AZ2Private1Subnet:
+    Description: AZ2 Subnet of the newly created VPC
+    Value:
+      !Ref AZ2Private1Subnet
+    Export:
+      Name:
+        Fn::Sub: AZ2Private1Subnet

@@ -1,0 +1,36 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: AWS CloudFormation Template to create the iam roles necessary to a batch
+  job to run
+Parameters: 
+  s3uniqueprefix: 
+    Description: This will be the prefix on all s3 buckets.  
+    Type: String
+    Default: ryan-mxnet-demo
+  JobQueueName:
+    Description: This is the name of the job queue you wish to use
+      unique
+    Type: String
+    Default: mxnet-jq
+  # jobqueue def
+  ComputeEnvironmentName:
+    Description: This is the name for the compute environment you wish to use
+    Type: String
+    Default: mxnet-ce-2
+Resources:
+  JobQueue:
+    Type: AWS::Batch::JobQueue
+    Properties:
+      ComputeEnvironmentOrder:
+          - Order: 1
+            ComputeEnvironment:         
+              Fn::Join:
+                - "-"
+                - - !Ref s3uniqueprefix
+                  - !Ref ComputeEnvironmentName
+      State: ENABLED
+      Priority: 1
+      JobQueueName:
+        Fn::Join:
+          - "-"
+          - - !Ref s3uniqueprefix
+            - !Ref JobQueueName
