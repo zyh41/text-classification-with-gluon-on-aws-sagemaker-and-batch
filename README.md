@@ -2,7 +2,9 @@
 
 Source: [aws-ml-blog]("https://aws.amazon.com/blogs/machine-learning/text-classification-with-gluon-on-amazon-sagemaker-and-aws-batch/")
 
-# FAQ
+> Note: Currently the demo is in region: us-west-2
+
+# FAQs
 * ***fail to build wheel for scipy***
     
     Add ```RUN apt-get update``` and ```RUN apt-get install -y python-dev``` on top of [Dockerfile](./container/Dockerfile) 
@@ -12,6 +14,7 @@ Source: [aws-ml-blog]("https://aws.amazon.com/blogs/machine-learning/text-classi
     Add `keepdims=True` in `mx.nd.argmax` functions.
     
     Ref:
+    
     *https://github.com/apache/incubator-mxnet/issues/6405*
     
     *https://mxnet.incubator.apache.org/api/python/model.html?highlight=metric#mxnet.metric.Accuracy*

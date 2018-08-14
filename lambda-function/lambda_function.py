@@ -33,8 +33,13 @@ def lambda_handler(event, context):
         the creation response that describes the job submitted to 
         the most recent job queue
     """
+
+    """
+        my_session = boto3.session.Session()
+        my_region = my_session.region_name
+    """
     try:
-        client = boto3.client('batch', region_name='us-east-1') #RYAN
+        client = boto3.client('batch', region_name='us-east-1') # TODO: Change to default region
 
         ce = client.describe_compute_environments(
                                 computeEnvironments=[ENVIRONMENTNAME]
