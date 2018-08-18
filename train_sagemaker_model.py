@@ -6,7 +6,7 @@ import argparse
 parser = argparse.ArgumentParser(description='Train language model with Amazon SageMaker.')
 parser.add_argument('--image-name', type=str, default='languagemodel-ryan',
                     help='the image repository name -- set to the default in the blog')
-parser.add_argument('--role-name', type=str, default='service-role/AmazonSageMaker-ExecutionRole-20180812T174483',
+parser.add_argument('--role-name', type=str, default='AmazonSageMaker-ExecutionRole-{xxx}', # edit here
                     help='the SakeMaker execution role name -- set to the default in the blog')
 parser.add_argument('--region-name', type=str, default='us-west-2',
                     help='us-east-1, us-east-2, us-west-2, eu-west-1 -- set to the default in the blog')

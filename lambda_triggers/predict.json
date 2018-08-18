@@ -1,7 +1,7 @@
 {"LambdaFunctionConfigurations": [
     {
       "Id": "predict",
-      "LambdaFunctionArn": "arn:aws:lambda:us-west-2:390089750816:function:awsbatch-lambda-predict-function",
+      "LambdaFunctionArn": "arn:aws:lambda:us-west-2:{accountid}:function:awsbatch-lambda-predict-function", // edit here
       "Events": ["s3:ObjectCreated:*"]
       }
     ]

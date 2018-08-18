@@ -67,8 +67,7 @@ Parameters:
   IMAGE:
     Description: The respository URI from ECS Containers
     Type: String
-    Default: 390089750816.dkr.ecr.us-west-2.amazonaws.com/languagemodel-ryan
-    # {account-id}.dkr.ecr.{reguion}.amazonaws.com/languagemodel
+    Default: # {account-id}.dkr.ecr.{reguion}.amazonaws.com/languagemodel
   vcpus:
     Description: The number of cpus for the particular machine we want to use
     Type: String
@@ -507,11 +506,13 @@ Resources:
             - sagemaker.amazonaws.com
           Action: 
           - 'sts:AssumeRole'
-      Path: "/" # TODO: add service-role here
+      Path: "/service-role/" # TODO: add service-role here
       # TODO: add batchfullaccess and lambda full access below
       ManagedPolicyArns:
       - arn:aws:iam::aws:policy/AmazonSageMakerFullAccess
       - arn:aws:iam::aws:policy/AmazonS3FullAccess
+      - arn:aws:iam::aws:policy/AmazonBatchFullAccess
+      - arn:aws:iam::aws:policy/AWSLambdaFullAccess
       Policies:
       - PolicyName: SageMakerPolicy
         PolicyDocument:

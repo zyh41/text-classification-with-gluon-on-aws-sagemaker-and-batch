@@ -4,6 +4,8 @@ Source: [aws-ml-blog](https://aws.amazon.com/blogs/machine-learning/text-classif
 
 > Note: Currently the demo is in region: us-west-2
 
+This is a revised version of Amazon SageMaker blog code.
+ 
 # FAQs
 * ***fail to build wheel for scipy***
     
@@ -20,3 +22,10 @@ Source: [aws-ml-blog](https://aws.amazon.com/blogs/machine-learning/text-classif
     *https://mxnet.incubator.apache.org/api/python/model.html?highlight=metric#mxnet.metric.Accuracy*
     
     *https://mxnet.incubator.apache.org/api/python/ndarray/ndarray.html?highlight=argmax#mxnet.ndarray.argmax*
+    
+# TODOs
+- [ ] add support for py3
+- [ ] fix Batch source command hard coded filename in [create.yaml](./cloudformation-templates/create.yaml)
+- [X] change path for `AmazonSageMakerExecutionRole` in `create.yaml`
+- [X] add batch access and lambda access for SageMaker execution role
+- [X] change to aws-cli default region in [lambda_function.py](./lambda-function/lambda_function.py)
