@@ -15,7 +15,7 @@ Parameters:
   ComputeEnvironmentName:
     Description: This is the name for the compute environment you wish to use
     Type: String
-    Default: mxnet-ce-2
+    Default: mxnet-ce-082718
 Resources:
   JobQueue:
     Type: AWS::Batch::JobQueue
