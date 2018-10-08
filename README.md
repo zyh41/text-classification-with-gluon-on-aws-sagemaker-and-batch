@@ -1,6 +1,7 @@
 # Text Classification with Gluon on Amazon SageMaker and AWS Batch
 
 ![Architecture](./text-classification-gluon-architecture.gif)
+
 Source: [aws-ml-blog](https://aws.amazon.com/blogs/machine-learning/text-classification-with-gluon-on-amazon-sagemaker-and-aws-batch/)
 
 > Note: Currently the demo is in region: us-west-2
